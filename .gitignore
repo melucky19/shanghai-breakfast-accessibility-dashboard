@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.npm-cache/
+.env.local
+.env.*.local
+work/
+server/cache/
+outputs/
+*.log
