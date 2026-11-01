@@ -1,0 +1,321 @@
+:root {
+  color-scheme: light;
+  --font-serif: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+  --font-sans: "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  --paper: #f4ecdf;
+  --paper-deep: #eadfce;
+  --surface: #fff9ef;
+  --surface-2: #f7efdf;
+  --ink: #1f3030;
+  --muted: #7d766a;
+  --line: rgba(66, 66, 50, 0.14);
+  --accent: #e45d31;
+  --accent-soft: #f3c5a9;
+  --mustard: #d99d32;
+  --olive: #70806d;
+  --panel-shadow: 0 12px 38px rgba(67, 48, 25, 0.075);
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--ink);
+  background:
+    radial-gradient(
+      circle at 86% 6%,
+      rgba(228, 93, 49, 0.13),
+      transparent 20%
+    ),
+    radial-gradient(
+      circle at 2% 94%,
+      rgba(112, 128, 109, 0.1),
+      transparent 22%
+    ),
+    linear-gradient(115deg, rgba(255, 255, 255, 0.52), transparent 43%),
+    var(--paper);
+  overflow-x: hidden;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(75, 62, 45, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(75, 62, 45, 0.035) 1px, transparent 1px);
+  background-size: 38px 38px;
+  mask-image: linear-gradient(to bottom, black, transparent 88%);
+}
+
+button {
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dashboard {
+  width: 100%;
+  min-height: 100vh;
+  padding: clamp(14px, 1.25vw, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(10px, 1vh, 16px);
+}
+
+.dashboard-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns:
+    minmax(270px, 0.98fr)
+    minmax(560px, 2.55fr)
+    minmax(280px, 1fr);
+  gap: clamp(12px, 1vw, 18px);
+}
+
+.data-alert {
+  min-height: 38px;
+  padding: 8px 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid rgba(163, 59, 39, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 249, 239, 0.9);
+  color: #8f3829;
+  font-size: clamp(10px, 0.7vw, 13px);
+}
+
+.data-alert button {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid rgba(163, 59, 39, 0.2);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.data-alert--warning {
+  border-color: rgba(185, 125, 31, 0.24);
+  background: rgba(255, 247, 226, 0.92);
+  color: #7c5a18;
+}
+
+.data-alert--warning button {
+  border-color: rgba(185, 125, 31, 0.24);
+}
+
+.sync-progress {
+  padding: 10px 13px 9px;
+  border: 1px solid rgba(228, 93, 49, 0.2);
+  border-radius: 10px;
+  background: rgba(255, 249, 239, 0.93);
+  box-shadow: 0 6px 18px rgba(67, 48, 25, 0.05);
+}
+
+.sync-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  font-size: clamp(10px, 0.68vw, 13px);
+}
+
+.sync-progress-head strong {
+  color: var(--accent);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-progress-track {
+  height: 7px;
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(112, 128, 109, 0.14);
+}
+
+.sync-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--olive), var(--mustard), var(--accent));
+  transition: width 260ms ease;
+}
+
+.sync-progress p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: clamp(9px, 0.6vw, 11px);
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-column {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(10px, 1vh, 16px);
+}
+
+.panel {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(80, 67, 48, 0.11);
+  border-radius: clamp(14px, 1.1vw, 19px);
+  background: rgba(255, 249, 239, 0.9);
+  box-shadow: var(--panel-shadow);
+}
+
+.dashboard-footnote {
+  min-height: 17px;
+  padding: 0 3px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: rgba(125, 118, 106, 0.8);
+  font-size: clamp(8px, 0.54vw, 10px);
+  line-height: 1.3;
+}
+
+@media (max-height: 880px) and (min-width: 1101px) {
+  .dashboard {
+    padding: 12px 16px;
+    gap: 8px;
+  }
+
+  .dashboard-grid,
+  .dashboard-column {
+    gap: 8px;
+  }
+
+  .dashboard-header {
+    min-height: 68px;
+  }
+
+  .dashboard-footnote {
+    min-height: 14px;
+  }
+
+  .left-column > :first-child {
+    flex-basis: 150px;
+  }
+
+  .left-column > :nth-child(2) {
+    min-height: 210px;
+  }
+
+  .left-column > :last-child {
+    flex-basis: 190px;
+  }
+
+  .right-column > :first-child {
+    flex-basis: 190px;
+  }
+
+  .right-column > :nth-child(2) {
+    flex-basis: 180px;
+  }
+
+  .right-column > :last-child {
+    min-height: 0;
+  }
+
+  .map-panel {
+    min-height: 0;
+  }
+
+  .map-stage,
+  .map-canvas {
+    min-height: 330px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .dashboard {
+    min-height: 0;
+  }
+
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .map-panel {
+    grid-row: 1;
+  }
+
+  .left-column {
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .right-column {
+    grid-row: 3;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .right-column > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .dashboard {
+    padding: 12px;
+  }
+
+  .dashboard-grid {
+    gap: 12px;
+  }
+
+  .left-column,
+  .right-column {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .right-column > :last-child {
+    grid-column: auto;
+  }
+
+  .dashboard-footnote {
+    flex-direction: column;
+    gap: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
