@@ -68,9 +68,9 @@ const dateText = computed(() =>
           :class="{ 'is-error': errorMessage, 'is-loading': loading || refreshing }"
           aria-hidden="true"
         />
-        <span v-if="loading">正在同步高德数据</span>
+        <span v-if="loading">正在同步 OpenStreetMap 数据</span>
         <span v-else-if="errorMessage">数据更新失败</span>
-        <span v-else>高德 POI 已同步 · {{ lastUpdated }}</span>
+        <span v-else>OpenStreetMap 已同步 · {{ lastUpdated }}</span>
         <button type="button" :disabled="refreshing" @click="emit('refresh')">
           {{ refreshing ? "同步中" : "刷新" }}
         </button>

@@ -105,7 +105,7 @@ const loadedRatio = computed(() => {
     </div>
 
     <p class="quality-note">
-      数据来自高德真实 POI 缓存，最近同步于 {{ lastUpdated }}。
+      数据来自 OpenStreetMap 公共地图数据，最近同步于 {{ lastUpdated }}。
     </p>
   </section>
 </template>

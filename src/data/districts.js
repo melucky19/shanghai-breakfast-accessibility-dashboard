@@ -33,7 +33,4 @@ export const breakfastCategories = [
   { keyword: "咖啡", category: "咖啡烘焙", color: "#70806d" },
 ];
 
-export const breakfastQuery = "早餐";
-export const officeQuery = "写字楼";
-
-export const AMAP_CACHE_KEY = "shanghai-breakfast-amap-v4";
+export const PUBLIC_MAP_CACHE_KEY = "shanghai-breakfast-osm-v1";

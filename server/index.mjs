@@ -2,9 +2,16 @@ import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
-  handleBreakfastRequest,
-  handlePlaceSearchRequest,
-} from "./breakfast-api.mjs";
+  handleMapDatasetRequest,
+  handlePublicPlaceSearchRequest,
+  handlePublicRouteRequest,
+} from "./public-map-api.mjs";
+import {
+  handleChatIntentRequest,
+  handleChatRecommendationRequest,
+  handleLlmStatusRequest,
+} from "./chat-api.mjs";
+import { createLlmConfig } from "./llm-service.mjs";
 
 function parseEnv(source) {
   return Object.fromEntries(
@@ -20,14 +27,18 @@ function parseEnv(source) {
 }
 
 let env = {};
-try {
-  env = parseEnv(await fs.readFile(path.resolve(".env.local"), "utf8"));
-} catch {
-  env = {};
+for (const filename of [".env.local", ".env.zhipu.local"]) {
+  try {
+    Object.assign(
+      env,
+      parseEnv(await fs.readFile(path.resolve(filename), "utf8"))
+    );
+  } catch {
+    // Optional environment files are allowed to be absent.
+  }
 }
 
-const webServiceKey =
-  process.env.AMAP_WEB_SERVICE_KEY || env.AMAP_WEB_SERVICE_KEY || "";
+const llmConfig = createLlmConfig(env);
 const port = Number(process.env.PORT || 8787);
 const distDirectory = path.resolve("dist");
 const contentTypes = {
@@ -42,12 +53,31 @@ const contentTypes = {
 
 const server = createServer(async (request, response) => {
   const requestUrl = new URL(request.url, "http://localhost");
-  if (requestUrl.pathname === "/api/breakfast-pois") {
-    await handleBreakfastRequest(request, response, { webServiceKey });
+  if (
+    requestUrl.pathname === "/api/map-dataset" ||
+    requestUrl.pathname === "/api/breakfast-pois"
+  ) {
+    await handleMapDatasetRequest(request, response);
     return;
   }
   if (requestUrl.pathname === "/api/place-search") {
-    await handlePlaceSearchRequest(request, response, { webServiceKey });
+    await handlePublicPlaceSearchRequest(request, response);
+    return;
+  }
+  if (requestUrl.pathname === "/api/route") {
+    await handlePublicRouteRequest(request, response);
+    return;
+  }
+  if (requestUrl.pathname === "/api/chat-intent") {
+    await handleChatIntentRequest(request, response, { llmConfig });
+    return;
+  }
+  if (requestUrl.pathname === "/api/chat-recommendation") {
+    await handleChatRecommendationRequest(request, response, { llmConfig });
+    return;
+  }
+  if (requestUrl.pathname === "/api/llm-status") {
+    handleLlmStatusRequest(request, response, { llmConfig });
     return;
   }
 

@@ -1,9 +1,14 @@
 <script setup>
-import { onBeforeUnmount, reactive, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
 import {
   planCommuteRoute,
   searchPlaceCandidates,
-} from "../services/amap";
+} from "../services/public-map";
+import {
+  parseBreakfastChat,
+  selectBreakfastRecommendations,
+} from "../services/chat";
+import { selectUnambiguousPlace } from "../services/place-match";
 
 const props = defineProps({
   open: {
@@ -17,6 +22,14 @@ const props = defineProps({
   route: {
     type: Object,
     default: null,
+  },
+  initialMessage: {
+    type: String,
+    default: "",
+  },
+  autoStart: {
+    type: Boolean,
+    default: false,
   },
 });
 
@@ -33,8 +46,20 @@ const mode = ref("transit");
 const loading = ref(false);
 const errorMessage = ref("");
 const result = ref(null);
+const chatMessage = ref("");
+const chatBusy = ref(false);
+const manualOpen = ref(false);
+const activeIntent = ref({});
+const assistantMessage = ref("");
+const lastAutoStarted = ref("");
 const debounceTimers = new Map();
 const requestVersions = { origin: 0, destination: 0 };
+
+const chatExamples = [
+  "我早上 8:30 前到静安寺上班，从上海大学宝山校区出发，想在地铁沿线买包子，预算 15 元，绕行不超过 8 分钟",
+  "从人民广场到张江高科，坐地铁，早餐想清淡一点，步行取餐不超过 5 分钟",
+  "从上海大学宝山校区到徐家汇，想买热乎、方便带走的早餐，绕路不要超过 6 分钟",
+];
 
 const modes = [
   { value: "transit", label: "公共交通" },
@@ -82,6 +107,7 @@ async function loadSuggestions(field, text = fieldState(field).text.value) {
 }
 
 function onLocationInput(field) {
+  activeIntent.value = {};
   fieldState(field).selected.value = null;
   clearSuggestions(field);
   activeField.value = field;
@@ -111,6 +137,7 @@ function swapEndpoints() {
   suggestions.origin = [];
   suggestions.destination = [];
   errorMessage.value = "";
+  activeIntent.value = {};
 }
 
 async function resolveEndpoint(field) {
@@ -118,9 +145,21 @@ async function resolveEndpoint(field) {
   if (state.selected.value) return state.selected.value;
 
   const candidates = await searchPlaceCandidates(state.text.value.trim(), 8);
+  const automaticCandidate = selectUnambiguousPlace(
+    state.text.value.trim(),
+    candidates
+  );
+  if (automaticCandidate) {
+    state.selected.value = automaticCandidate;
+    state.text.value = automaticCandidate.name;
+    suggestions[field] = [];
+    activeField.value = "";
+    return automaticCandidate;
+  }
   if (candidates.length > 1) {
     suggestions[field] = candidates;
     activeField.value = field;
+    manualOpen.value = true;
     const label = field === "origin" ? "起点" : "终点";
     throw new Error(`“${state.text.value.trim()}”有多个${label}候选，请先选择一个准确地点。`);
   }
@@ -129,7 +168,12 @@ async function resolveEndpoint(field) {
   return candidates[0];
 }
 
-async function planRoute() {
+function setMode(value) {
+  mode.value = value;
+  activeIntent.value = {};
+}
+
+async function executePlan({ message = "" } = {}) {
   if (loading.value) return;
   if (!originText.value.trim() || !destinationText.value.trim()) {
     errorMessage.value = "请填写起点和终点。";
@@ -150,8 +194,35 @@ async function planRoute() {
       destination,
       mode: mode.value,
       breakfastPois: props.breakfastPois,
+      preferences: activeIntent.value,
     });
+    if (message && planned.recommendationCandidates?.length) {
+      try {
+        const aiResult = await selectBreakfastRecommendations({
+          message,
+          intent: activeIntent.value,
+          candidates: planned.recommendationCandidates,
+        });
+        planned.recommendations = aiResult.recommendations;
+        planned.aiSummary =
+          aiResult.selector === "local-ranking"
+            ? `模型接口不可用或额度不足，已使用本地规则解析。${aiResult.assistantMessage}`
+            : aiResult.assistantMessage;
+        planned.recommendationSelector = aiResult.selector;
+      } catch (error) {
+        planned.aiSummary =
+          "模型接口暂不可用，已按绕行时间、预算和口味关键词完成本地排序。";
+        planned.recommendationSelector = "local-ranking";
+        planned.aiFallbackReason =
+          error instanceof Error ? error.message : "模型推荐暂不可用。";
+      }
+    }
     result.value = planned;
+    assistantMessage.value =
+      planned.aiSummary ||
+      (activeIntent.value.preferences?.length
+        ? `已优先匹配：${activeIntent.value.preferences.join("、")}。`
+        : "");
     emit("planned", planned);
   } catch (error) {
     errorMessage.value =
@@ -161,9 +232,68 @@ async function planRoute() {
   }
 }
 
+async function planRoute() {
+  await executePlan();
+}
+
+function useChatExample(example) {
+  chatMessage.value = example;
+  errorMessage.value = "";
+}
+
+async function planFromChat() {
+  const message = chatMessage.value.trim();
+  if (!message || chatBusy.value || loading.value) {
+    if (!message) errorMessage.value = "请先描述通勤路线和早餐偏好。";
+    return;
+  }
+
+  chatBusy.value = true;
+  errorMessage.value = "";
+  assistantMessage.value = "";
+  try {
+    const intent = await parseBreakfastChat(message);
+    activeIntent.value = intent;
+    if (intent.originQuery) {
+      originText.value = intent.originQuery;
+      selectedOrigin.value = null;
+      suggestions.origin = [];
+    }
+    if (intent.destinationQuery) {
+      destinationText.value = intent.destinationQuery;
+      selectedDestination.value = null;
+      suggestions.destination = [];
+    }
+    if (["transit", "driving", "walking"].includes(intent.mode)) {
+      mode.value = intent.mode;
+    }
+    if (intent.missingFields?.length) {
+      manualOpen.value = true;
+      errorMessage.value =
+        "请在聊天中同时说明起点和终点，例如“从上海大学宝山校区到静安寺上班”。";
+      return;
+    }
+    assistantMessage.value =
+      intent.assistantMessage ||
+      `已识别：${originText.value} → ${destinationText.value}${
+        intent.preferences?.length
+          ? ` · 偏好 ${intent.preferences.join("、")}`
+          : ""
+      }`;
+    await executePlan({ message });
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "聊天需求解析失败。";
+  } finally {
+    chatBusy.value = false;
+  }
+}
+
 function clearRoute() {
   result.value = null;
   errorMessage.value = "";
+  activeIntent.value = {};
+  assistantMessage.value = "";
   emit("clear");
 }
 
@@ -175,11 +305,27 @@ watch(
 );
 
 watch(
-  () => props.open,
-  (open) => {
-    if (!open) return;
+  () => [props.open, props.initialMessage, props.autoStart],
+  async ([open, initialMessage, autoStart]) => {
+    if (!open) {
+      lastAutoStarted.value = "";
+      return;
+    }
     if (!selectedOrigin.value) loadSuggestions("origin");
     if (!selectedDestination.value) loadSuggestions("destination");
+    const message = initialMessage.trim();
+    if (message) chatMessage.value = message;
+    if (
+      message &&
+      autoStart &&
+      lastAutoStarted.value !== message &&
+      !chatBusy.value &&
+      !loading.value
+    ) {
+      lastAutoStarted.value = message;
+      await nextTick();
+      await planFromChat();
+    }
   },
   { immediate: true }
 );
@@ -198,7 +344,7 @@ onBeforeUnmount(() => {
           <div>
             <p class="planner-eyebrow">COMMUTE BREAKFAST ROUTE</p>
             <h2 id="planner-title">通勤早餐推荐</h2>
-            <p>搜索并确认起点、终点，再匹配通勤路线附近的真实早餐 POI。</p>
+            <p>直接描述通勤路线、预算和口味，也可以手动确认起点与终点。</p>
           </div>
           <button class="close-button" type="button" aria-label="关闭" @click="emit('close')">
             ×
@@ -206,6 +352,60 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="planner-form">
+          <section class="chat-request" aria-labelledby="chat-request-title">
+            <div class="chat-request-head">
+              <div>
+                <span id="chat-request-title">AI 早餐助手</span>
+                <small>智谱 GLM-4.7-Flash · 高峰期自动切换 4.5-Flash</small>
+              </div>
+              <span class="chat-status">
+                {{
+                  activeIntent.parser === "free-llm"
+                    ? activeIntent.model || "模型在线"
+                    : "智能解析"
+                }}
+              </span>
+            </div>
+            <textarea
+              v-model="chatMessage"
+              rows="4"
+              maxlength="1200"
+              placeholder="例如：我 8:30 前到静安寺上班，从上海大学宝山校区出发，想在地铁沿线买包子，预算 15 元，绕行不超过 8 分钟。"
+              @keydown.ctrl.enter.prevent="planFromChat"
+            />
+            <div class="chat-examples" aria-label="聊天示例">
+              <button
+                v-for="example in chatExamples"
+                :key="example"
+                type="button"
+                @click="useChatExample(example)"
+              >
+                {{ example.slice(0, 18) }}…
+              </button>
+            </div>
+            <button
+              class="chat-primary"
+              type="button"
+              :disabled="chatBusy || loading"
+              @click="planFromChat"
+            >
+              {{ chatBusy ? "正在理解需求…" : "让 AI 解析并推荐早餐" }}
+            </button>
+            <p v-if="assistantMessage" class="assistant-message">
+              {{ assistantMessage }}
+            </p>
+          </section>
+
+          <details
+            class="manual-adjust"
+            :open="manualOpen"
+            @toggle="manualOpen = $event.currentTarget.open"
+          >
+            <summary>
+              <span>手动调整起点、终点和通勤方式</span>
+              <small>可选</small>
+            </summary>
+            <div class="manual-adjust-body">
           <div class="location-field">
             <label for="origin-input">起点</label>
             <div class="input-wrap">
@@ -213,7 +413,7 @@ onBeforeUnmount(() => {
                 id="origin-input"
                 v-model="originText"
                 type="text"
-                placeholder="例如：华东理工大学"
+                placeholder="例如：上海大学（宝山）"
                 autocomplete="off"
                 @input="onLocationInput('origin')"
                 @focus="activeField = 'origin'"
@@ -305,7 +505,7 @@ onBeforeUnmount(() => {
                 type="button"
                 :class="{ 'is-active': mode === item.value }"
                 :aria-pressed="mode === item.value"
-                @click="mode = item.value"
+                @click="setMode(item.value)"
               >
                 {{ item.label }}
               </button>
@@ -314,7 +514,7 @@ onBeforeUnmount(() => {
 
           <div class="planner-actions">
             <button class="primary-action" type="button" :disabled="loading" @click="planRoute">
-              {{ loading ? "正在规划真实路线…" : "规划路线并推荐早餐" }}
+              {{ loading ? "正在规划真实路线…" : "使用当前地点规划" }}
             </button>
             <button
               v-if="route"
@@ -325,6 +525,8 @@ onBeforeUnmount(() => {
               清除路线
             </button>
           </div>
+            </div>
+          </details>
         </div>
 
         <p v-if="errorMessage" class="planner-error" role="alert">
@@ -344,10 +546,34 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <section class="text-recommendation" aria-labelledby="text-recommendation-title">
+            <div class="text-recommendation-head">
+              <span id="text-recommendation-title">文字推荐</span>
+              <small>{{ result.recommendationSelector === "free-llm" ? "智谱整理" : "本地规则整理" }}</small>
+            </div>
+            <p>
+              {{ assistantMessage || "已根据路线、绕行时间和早餐偏好完成排序。" }}
+            </p>
+            <ol v-if="result.recommendations.length">
+              <li
+                v-for="poi in result.recommendations"
+                :key="`text-${poi.id}`"
+              >
+                <strong>{{ poi.name }}</strong>
+                <span>
+                  {{ poi.aiReason || poi.matchReasons?.join("、") || "绕行时间和综合排序较合适" }}；
+                  距路线约 {{ poi.routeDistance }} 米，早餐绕行约
+                  {{ poi.detourMinutes }} 分钟，含早餐全程约
+                  {{ poi.totalMinutes }} 分钟。
+                </span>
+              </li>
+            </ol>
+          </section>
+
           <div class="result-title">
             <div>
               <h3>路线附近早餐</h3>
-              <p>按绕行时间与高德评分综合排序</p>
+              <p>按绕行时间、预算、口味偏好与评分综合排序</p>
             </div>
             <span>{{ result.recommendations.length }} 个推荐</span>
           </div>
@@ -366,6 +592,9 @@ onBeforeUnmount(() => {
                   距路线 {{ poi.routeDistance }} 米
                   <template v-if="poi.rating"> · 评分 {{ poi.rating.toFixed(1) }}</template>
                 </small>
+                <small v-if="poi.aiReason || poi.matchReasons?.length" class="match-reason">
+                  {{ poi.aiReason || poi.matchReasons.join(" · ") }}
+                </small>
               </div>
               <div class="recommendation-time">
                 <strong>+{{ poi.detourMinutes }} 分</strong>
@@ -379,8 +608,8 @@ onBeforeUnmount(() => {
           </p>
 
           <p class="method-note">
-            路径时间来自高德路径规划；早餐绕行时间按“路线垂直距离 × 往返 ÷ 75
-            米/分钟”估算，未包含排队等待时间。
+            聊天需求由智谱 GLM-4.7-Flash 或本地规则解析；地点、路线和早餐 POI 仍使用真实地图数据。
+            绕行时间按“路线垂直距离 × 往返 ÷ 75 米/分钟”估算，未包含排队等待时间。
           </p>
         </section>
       </aside>
@@ -470,6 +699,172 @@ onBeforeUnmount(() => {
   margin-top: 20px;
   display: grid;
   gap: 13px;
+}
+
+.chat-request {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid rgba(228, 93, 49, 0.2);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(228, 93, 49, 0.09), transparent 62%),
+    rgba(255, 249, 239, 0.72);
+}
+
+.chat-request-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-request-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.chat-request-head > div > span {
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.chat-request-head small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.chat-status {
+  padding: 4px 7px;
+  border: 1px solid rgba(228, 93, 49, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 249, 239, 0.7);
+  color: var(--accent);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.chat-request textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 11px;
+  resize: vertical;
+  border: 1px solid rgba(80, 67, 48, 0.16);
+  border-radius: 9px;
+  background: rgba(255, 252, 246, 0.86);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none;
+}
+
+.chat-request textarea:focus {
+  border-color: rgba(228, 93, 49, 0.55);
+  box-shadow: 0 0 0 3px rgba(228, 93, 49, 0.09);
+}
+
+.chat-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chat-examples button {
+  max-width: 100%;
+  padding: 5px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(80, 67, 48, 0.1);
+  border-radius: 999px;
+  background: rgba(247, 239, 223, 0.68);
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chat-examples button:hover,
+.chat-examples button:focus-visible {
+  border-color: rgba(228, 93, 49, 0.34);
+  color: var(--accent);
+}
+
+.chat-primary {
+  min-height: 42px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chat-primary:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.assistant-message {
+  margin: 0;
+  padding: 8px 9px;
+  border-left: 2px solid var(--accent);
+  background: rgba(247, 239, 223, 0.58);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.manual-adjust {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.manual-adjust summary {
+  padding: 10px 2px 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.manual-adjust summary::-webkit-details-marker {
+  display: none;
+}
+
+.manual-adjust summary::before {
+  content: "＋";
+  color: var(--accent);
+}
+
+.manual-adjust[open] summary::before {
+  content: "－";
+}
+
+.manual-adjust summary span {
+  flex: 1;
+}
+
+.manual-adjust summary small {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 8px;
+}
+
+.manual-adjust-body {
+  padding: 6px 0 2px;
+  display: grid;
+  gap: 13px;
+  opacity: 0.9;
 }
 
 .location-field,
@@ -702,6 +1097,62 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
+.text-recommendation {
+  margin-top: 11px;
+  padding: 13px 14px;
+  border: 1px solid rgba(80, 67, 48, 0.11);
+  border-radius: 10px;
+  background: rgba(255, 252, 246, 0.72);
+}
+
+.text-recommendation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.text-recommendation-head > span {
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.text-recommendation-head small {
+  color: var(--accent);
+  font-size: 8px;
+}
+
+.text-recommendation > p {
+  margin: 8px 0 0;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.text-recommendation ol {
+  margin: 9px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+.text-recommendation li + li {
+  margin-top: 7px;
+}
+
+.text-recommendation li strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.text-recommendation li span {
+  display: block;
+  margin-top: 2px;
+}
+
 .result-title {
   display: flex;
   justify-content: space-between;
@@ -782,6 +1233,10 @@ onBeforeUnmount(() => {
   font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.recommendation-copy .match-reason {
+  color: var(--accent);
 }
 
 .recommendation-time {

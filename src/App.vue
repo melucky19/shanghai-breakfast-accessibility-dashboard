@@ -9,6 +9,7 @@ import AccessibilityPanel from "./components/AccessibilityPanel.vue";
 import ArrivalProfile from "./components/PeakRhythm.vue";
 import GapPanel from "./components/GapPanel.vue";
 import CommutePlanner from "./components/CommutePlanner.vue";
+import CommuteHero from "./components/CommuteHero.vue";
 import {
   districtMeta,
   districtByName,
@@ -18,7 +19,7 @@ import {
   buildRealtimeDataset,
   fetchRealtimeDataset,
   loadDatasetCache,
-} from "./services/amap";
+} from "./services/public-map";
 
 const CACHE_MAX_AGE_MINUTES = 15;
 const offlineMode =
@@ -26,6 +27,8 @@ const offlineMode =
 const activeBand = ref(15);
 const selectedName = ref("黄浦区");
 const plannerOpen = ref(false);
+const plannerInitialMessage = ref("");
+const plannerAutoStart = ref(false);
 const commuteRoute = ref(null);
 const now = new Date();
 now.setHours(7, 42, 0, 0);
@@ -60,11 +63,8 @@ const errorMessage = ref("");
 const syncProgress = ref({
   active: false,
   percent: 0,
-  completedTiles: 0,
-  totalTiles: 0,
+  stage: "",
   collected: 0,
-  requests: 0,
-  currentDistrict: "",
 });
 
 const districts = computed(() => dataset.value.districts);
@@ -225,9 +225,9 @@ const lastUpdatedText = computed(() => {
 });
 
 const dataModeLabel = computed(() => {
-  if (dataset.value.dataMode === "complete") return "服务端全量汇总";
-  if (dataset.value.dataMode === "server-partial") return "服务端分页汇总";
-  return "区级均衡采样";
+  if (dataset.value.dataMode === "osm-live") return "OpenStreetMap 在线";
+  if (dataset.value.dataMode === "osm-cache") return "OpenStreetMap 缓存";
+  return "OpenStreetMap";
 });
 
 function selectDistrict(name) {
@@ -244,10 +244,21 @@ function clearCommuteRoute() {
   commuteRoute.value = null;
 }
 
+function openCommutePlanner(message = "", autoStart = false) {
+  plannerInitialMessage.value = message;
+  plannerAutoStart.value = autoStart;
+  plannerOpen.value = true;
+}
+
+function closeCommutePlanner() {
+  plannerOpen.value = false;
+  plannerAutoStart.value = false;
+}
+
 async function refreshData({ silent = false, refreshFull = false } = {}) {
   if (refreshing.value) return;
   if (offlineMode) {
-    errorMessage.value = "当前为离线调试模式，不会请求高德 POI。";
+    errorMessage.value = "当前为离线调试模式，不会请求 OpenStreetMap 数据。";
     loading.value = false;
     return;
   }
@@ -257,11 +268,8 @@ async function refreshData({ silent = false, refreshFull = false } = {}) {
   syncProgress.value = {
     active: true,
     percent: 0,
-    completedTiles: 0,
-    totalTiles: 0,
+    stage: "",
     collected: 0,
-    requests: 0,
-    currentDistrict: "",
   };
 
   try {
@@ -271,17 +279,14 @@ async function refreshData({ silent = false, refreshFull = false } = {}) {
         syncProgress.value = {
           active: true,
           percent: progress.percent || 0,
-          completedTiles: progress.completedTiles || 0,
-          totalTiles: progress.totalTiles || 0,
+          stage: progress.stage || "",
           collected: progress.collected || 0,
-          requests: progress.requests || 0,
-          currentDistrict: progress.currentDistrict || "",
         };
       },
     });
   } catch (error) {
     errorMessage.value =
-      error instanceof Error ? error.message : "高德数据同步失败。";
+      error instanceof Error ? error.message : "OpenStreetMap 数据同步失败。";
   } finally {
     refreshing.value = false;
     loading.value = false;
@@ -310,7 +315,7 @@ onMounted(() => {
   if (offlineMode) {
     loading.value = false;
     errorMessage.value =
-      "离线调试模式下未找到本地数据缓存，请先正常打开一次大屏。";
+      "离线调试模式下未找到本地数据缓存，请先联网打开一次大屏。";
     return;
   }
   refreshData({ silent: Boolean(cached), refreshFull: false });
@@ -330,7 +335,7 @@ onMounted(() => {
     />
 
     <div v-if="errorMessage" class="data-alert" role="alert">
-      <span>高德实时数据未能更新：{{ errorMessage }}</span>
+      <span>OpenStreetMap 数据未能更新：{{ errorMessage }}</span>
       <button type="button" @click="manualRefresh">重新同步</button>
     </div>
     <div
@@ -341,17 +346,15 @@ onMounted(() => {
     >
       <div class="sync-progress-head">
         <span>
-          正在同步高德早餐 POI
-          <template v-if="syncProgress.currentDistrict">
-            · 当前 {{ syncProgress.currentDistrict }}
-          </template>
+          正在同步 OpenStreetMap 数据
+          <template v-if="syncProgress.stage"> · {{ syncProgress.stage }}</template>
         </span>
         <strong>{{ syncProgress.percent }}%</strong>
       </div>
       <div
         class="sync-progress-track"
         role="progressbar"
-        aria-label="高德早餐 POI 同步进度"
+        aria-label="OpenStreetMap 数据同步进度"
         :aria-valuenow="syncProgress.percent"
         aria-valuemin="0"
         aria-valuemax="100"
@@ -359,25 +362,20 @@ onMounted(() => {
         <i :style="{ width: `${syncProgress.percent}%` }" />
       </div>
       <p>
-        已完成 {{ syncProgress.completedTiles }} / {{ syncProgress.totalTiles }} 个网格
-        · 已发起 {{ syncProgress.requests }} 个请求
-        · 已获取 {{ syncProgress.collected.toLocaleString("zh-CN") }} 条
+        {{ syncProgress.stage || "正在准备数据" }}
+        · 已获取 {{ syncProgress.collected.toLocaleString("zh-CN") }} 条公开地图记录
       </p>
     </div>
     <div
-      v-else-if="dataset.dataMode !== 'complete'"
+      v-else-if="!dataset.complete"
       class="data-alert data-alert--warning"
       role="status"
     >
-      <span v-if="dataset.dataMode === 'sample'">
+      <span>
         当前为{{ dataModeLabel }}：{{ dataset.serverMessage }}
-        配置 Web 服务 Key 后会自动切换到服务端分页全量汇总。
+        {{ dataset.complete ? "" : "办公地点使用行政区代理样本，达标率只作趋势参考。" }}
       </span>
-      <span v-else>
-        当前为{{ dataModeLabel }}：{{ dataset.serverMessage }}
-        请在高德当日调用额度恢复后点击“重试全量”。
-      </span>
-      <button type="button" @click="manualRefresh">重试全量</button>
+      <button type="button" @click="manualRefresh">重新同步</button>
     </div>
 
     <main class="dashboard-grid">
@@ -400,21 +398,29 @@ onMounted(() => {
         />
       </aside>
 
-      <DistrictMap
-        :districts="districts"
-        :pois="breakfastPois"
-        :total-count="totalBreakfast"
-        :active-band="activeBand"
-        :selected-name="selectedName"
-        :loading="loading"
-        :updated-at="lastUpdatedText"
-        :data-mode-label="dataModeLabel"
-        :route="commuteRoute"
-        @select="selectDistrict"
-        @change-band="activeBand = $event"
-        @open-planner="plannerOpen = true"
-        @clear-route="clearCommuteRoute"
-      />
+      <section class="center-column" aria-label="地图与通勤早餐推荐">
+        <CommuteHero
+          :route="commuteRoute"
+          :loading="loading"
+          @start="openCommutePlanner($event, true)"
+          @open="openCommutePlanner('', false)"
+        />
+        <DistrictMap
+          :districts="districts"
+          :pois="breakfastPois"
+          :total-count="totalBreakfast"
+          :active-band="activeBand"
+          :selected-name="selectedName"
+          :loading="loading"
+          :updated-at="lastUpdatedText"
+          :data-mode-label="dataModeLabel"
+          :route="commuteRoute"
+          @select="selectDistrict"
+          @change-band="activeBand = $event"
+          @open-planner="openCommutePlanner()"
+          @clear-route="clearCommuteRoute"
+        />
+      </section>
 
       <aside class="dashboard-column right-column" aria-label="早餐可达性分析">
         <AccessibilityPanel
@@ -438,14 +444,16 @@ onMounted(() => {
       :open="plannerOpen"
       :breakfast-pois="breakfastPois"
       :route="commuteRoute"
-      @close="plannerOpen = false"
+      :initial-message="plannerInitialMessage"
+      :auto-start="plannerAutoStart"
+      @close="closeCommutePlanner"
       @planned="handleRoutePlanned"
       @clear="clearCommuteRoute"
     />
 
     <footer class="dashboard-footnote">
-      <span>地图与 POI：高德地图 · 可达性按 75 米/分钟步行速度估算</span>
-      <span>行政区边界：DataV.GeoAtlas · 高德坐标</span>
+      <span>聊天推荐：智谱 GLM-4.7-Flash/规则 · 地图与 POI：OpenStreetMap · 可达性按 75 米/分钟步行速度估算</span>
+      <span>区界：DataV.GeoAtlas · 搜索：Photon · 路径：OSRM</span>
     </footer>
   </div>
 </template>

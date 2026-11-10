@@ -47,7 +47,7 @@ const emit = defineEmits(["select"]);
         <span class="gap-score">{{ gap.score.toFixed(1) }}</span>
       </button>
     </div>
-    <p v-else class="gap-empty">正在等待高德办公地点与早餐 POI 数据。</p>
+    <p v-else class="gap-empty">正在等待 OpenStreetMap 办公地点与早餐候选数据。</p>
 
     <div class="gap-footnote">
       <span>真实 POI 定位 · 距离代理计算</span>

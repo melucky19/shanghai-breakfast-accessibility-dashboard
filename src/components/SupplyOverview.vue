@@ -26,7 +26,7 @@ defineProps({
 <template>
   <section class="panel supply-overview" aria-labelledby="supply-title">
     <p id="supply-title" class="section-kicker">
-      高德实时供给
+      OpenStreetMap 供给
       <small>{{ dataModeLabel }}</small>
     </p>
     <p class="hero-number">
@@ -36,7 +36,7 @@ defineProps({
     <div class="metric-line">
       <div>
         <span>数据来源</span>
-        <strong>高德地图</strong>
+        <strong>OpenStreetMap</strong>
       </div>
       <div>
         <span>办公地点样本</span>

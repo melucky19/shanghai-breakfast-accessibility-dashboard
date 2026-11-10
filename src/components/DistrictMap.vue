@@ -1,6 +1,7 @@
 <script setup>
 import {
   computed,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -8,45 +9,18 @@ import {
 } from "vue";
 import shanghaiGeoJson from "../assets/shanghai-districts.json";
 import { urbanNames } from "../data/districts";
-import { loadAmap } from "../services/amap";
+import { echarts } from "../lib/echarts";
 
 const props = defineProps({
-  districts: {
-    type: Array,
-    required: true,
-  },
-  pois: {
-    type: Array,
-    required: true,
-  },
-  totalCount: {
-    type: Number,
-    required: true,
-  },
-  activeBand: {
-    type: Number,
-    required: true,
-  },
-  selectedName: {
-    type: String,
-    required: true,
-  },
-  loading: {
-    type: Boolean,
-    required: true,
-  },
-  updatedAt: {
-    type: String,
-    required: true,
-  },
-  dataModeLabel: {
-    type: String,
-    required: true,
-  },
-  route: {
-    type: Object,
-    default: null,
-  },
+  districts: { type: Array, required: true },
+  pois: { type: Array, required: true },
+  totalCount: { type: Number, required: true },
+  activeBand: { type: Number, required: true },
+  selectedName: { type: String, required: true },
+  loading: { type: Boolean, required: true },
+  updatedAt: { type: String, required: true },
+  dataModeLabel: { type: String, required: true },
+  route: { type: Object, default: null },
 });
 
 const emit = defineEmits([
@@ -56,44 +30,26 @@ const emit = defineEmits([
   "clear-route",
 ]);
 
+echarts.registerMap("shanghai-osm", shanghaiGeoJson);
+
 const mapElement = ref(null);
 const mapError = ref("");
-let map;
-let infoWindow;
+const zoomMode = ref("city");
+let chart;
 let resizeObserver;
-let poiMarkers = [];
-let poiMassMarks;
-let routePolyline;
-let routeMarkers = [];
-const districtPolygons = new Map();
-const districtLabels = [];
-
-const outerLabelNames = new Set([
-  "崇明区",
-  "嘉定区",
-  "宝山区",
-  "浦东新区",
-  "闵行区",
-  "青浦区",
-  "松江区",
-  "金山区",
-  "奉贤区",
-]);
 
 const selectedDistrict = computed(
   () =>
     props.districts.find((district) => district.name === props.selectedName) ??
     props.districts[0]
 );
-
 const selectedCoverage = computed(
   () => selectedDistrict.value?.coverage?.[props.activeBand] ?? 0
 );
-
 const selectedDescription = computed(() =>
   urbanNames.has(selectedDistrict.value?.name)
-    ? "中心城区 · 高德早餐 POI 服务节点"
-    : "市域片区 · 高德早餐 POI 服务节点"
+    ? "中心城区 · OpenStreetMap 早餐候选"
+    : "市域片区 · OpenStreetMap 早餐候选"
 );
 
 const colorStops = [
@@ -102,7 +58,6 @@ const colorStops = [
   [0.72, [232, 139, 91]],
   [1, [217, 81, 42]],
 ];
-
 function interpolateColor(position) {
   const t = Math.max(0, Math.min(1, position));
   let upperIndex = colorStops.findIndex(([stop]) => stop >= t);
@@ -116,18 +71,6 @@ function interpolateColor(position) {
   return `rgb(${channel(0)}, ${channel(1)}, ${channel(2)})`;
 }
 
-function coverageColor(value, minimum, maximum) {
-  return interpolateColor((value - minimum) / (maximum - minimum || 1));
-}
-
-function polygonRings(geometry) {
-  if (geometry.type === "Polygon") return geometry.coordinates;
-  if (geometry.type === "MultiPolygon") {
-    return geometry.coordinates.flatMap((polygon) => polygon);
-  }
-  return [];
-}
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -137,373 +80,305 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function createDistrictPolygons(AMap) {
-  const coverageValues = props.districts.map(
+function districtRegions() {
+  const values = props.districts.map(
     (district) => district.coverage[props.activeBand]
   );
-  const minimum = Math.min(...coverageValues);
-  const maximum = Math.max(...coverageValues);
-
-  shanghaiGeoJson.features.forEach((feature) => {
-    const name = feature.properties.name;
-    const district = props.districts.find((item) => item.name === name);
-    if (!district) return;
-
-    const pathsForFeature = [];
-    polygonRings(feature.geometry).forEach((ring) => {
-      const polygon = new AMap.Polygon({
-        path: ring,
-        strokeColor: "#fff9ef",
-        strokeWeight: 1.2,
-        fillColor: coverageColor(
-          district.coverage[props.activeBand],
-          minimum,
-          maximum
-        ),
-        fillOpacity: 0.34,
-        bubble: true,
-        cursor: "pointer",
-        zIndex: 2,
-      });
-      polygon.on("click", () => emit("select", name));
-      polygon.setMap(map);
-      pathsForFeature.push(polygon);
-    });
-    districtPolygons.set(name, pathsForFeature);
-  });
-
-  props.districts
-    .filter((district) => outerLabelNames.has(district.name))
-    .forEach((district) => {
-      const label = new AMap.Text({
-        text: district.shortName,
-        position: district.center,
-        anchor: "center",
-        zIndex: 5,
-        style: {
-          border: "none",
-          background: "transparent",
-          color: "rgba(31,48,48,.74)",
-          fontFamily: '"Microsoft YaHei UI", "PingFang SC", sans-serif',
-          fontSize: "12px",
-          fontWeight: "500",
-          textShadow: "0 1px 2px rgba(255,249,239,.95)",
-          padding: "1px 3px",
-        },
-      });
-      label.setMap(map);
-      districtLabels.push(label);
-    });
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  return props.districts.map((district) => ({
+    name: district.name,
+    itemStyle: {
+      areaColor: interpolateColor(
+        (district.coverage[props.activeBand] - minimum) /
+          (maximum - minimum || 1)
+      ),
+      borderColor: district.name === props.selectedName ? "#1f3030" : "#fff9ef",
+      borderWidth: district.name === props.selectedName ? 2.4 : 1.1,
+      opacity: 0.88,
+    },
+    emphasis: {
+      itemStyle: {
+        areaColor: "#f3c5a9",
+        borderColor: "#1f3030",
+        borderWidth: 2,
+      },
+    },
+  }));
 }
 
-function updateDistrictStyles() {
-  if (districtPolygons.size === 0) return;
-  const coverageValues = props.districts.map(
-    (district) => district.coverage[props.activeBand]
-  );
-  const minimum = Math.min(...coverageValues);
-  const maximum = Math.max(...coverageValues);
-
-  props.districts.forEach((district) => {
-    const polygons = districtPolygons.get(district.name) ?? [];
-    const selected = district.name === props.selectedName;
-    polygons.forEach((polygon) => {
-      polygon.setOptions({
-        fillColor: coverageColor(
-          district.coverage[props.activeBand],
-          minimum,
-          maximum
-        ),
-        fillOpacity: selected ? 0.56 : 0.34,
-        strokeColor: selected ? "#1f3030" : "#fff9ef",
-        strokeWeight: selected ? 2.2 : 1.2,
-        zIndex: selected ? 4 : 2,
-      });
-    });
-  });
-}
-
-function createPoiOverlay(AMap) {
-  infoWindow = new AMap.InfoWindow({
-    isCustom: false,
-    autoMove: true,
-    offset: new AMap.Pixel(0, -8),
-  });
-  updatePoiOverlay();
-}
-
-function updatePoiOverlay() {
-  if (!map || !window.AMap || !infoWindow) return;
-  poiMarkers.forEach((marker) => marker.setMap(null));
-  poiMarkers = [];
-  poiMassMarks?.setMap(null);
-  poiMassMarks = undefined;
-
-  const showPoiDetails = (poi) => {
-    infoWindow.setContent(`
-      <div style="min-width:220px;padding:3px 2px;color:#1f3030;font-family:'Microsoft YaHei UI','PingFang SC',sans-serif">
-        <strong style="font-size:15px">${escapeHtml(poi.name)}</strong>
-        <div style="margin-top:7px;color:#7d766a;font-size:12px;line-height:1.6">
-          <div>${escapeHtml(poi.category)} · ${escapeHtml(poi.district)}</div>
-          <div>${escapeHtml(poi.address || "地址未提供")}</div>
-          <div>高德 POI ID：${escapeHtml(poi.id)}</div>
-        </div>
-      </div>
-    `);
-    infoWindow.open(map, [poi.lng, poi.lat]);
-  };
-
-  if (props.pois.length > 1200 && window.AMap.MassMarks) {
-    poiMassMarks = new window.AMap.MassMarks(
-      props.pois.map((poi) => ({
-        lnglat: [poi.lng, poi.lat],
-        style: 0,
-        poi,
-      })),
-      {
-        style: {
-          url: "https://webapi.amap.com/images/mass/mass0.png",
-          anchor: new window.AMap.Pixel(5, 5),
-          size: new window.AMap.Size(10, 10),
-        },
-        zooms: [8, 20],
-        cursor: "pointer",
-        zIndex: 12,
+function clusterPoiData() {
+  const groups = new Map();
+  props.pois
+    .filter(
+      (poi) =>
+        Number.isFinite(Number(poi.lng)) && Number.isFinite(Number(poi.lat))
+    )
+    .forEach((poi) => {
+      const latitudeStep = 1500 / 111000;
+      const longitudeStep =
+        1500 / (111000 * Math.cos((Number(poi.lat) * Math.PI) / 180));
+      const key = `${Math.floor(poi.lng / longitudeStep)}:${Math.floor(
+        poi.lat / latitudeStep
+      )}`;
+      const group = groups.get(key) || {
+        count: 0,
+        longitudeTotal: 0,
+        latitudeTotal: 0,
+        names: new Set(),
+        districts: new Map(),
+      };
+      group.count += 1;
+      group.longitudeTotal += Number(poi.lng);
+      group.latitudeTotal += Number(poi.lat);
+      if (poi.name && poi.name !== "未命名地点") group.names.add(poi.name);
+      if (poi.district) {
+        group.districts.set(
+          poi.district,
+          (group.districts.get(poi.district) || 0) + 1
+        );
       }
-    );
-    poiMassMarks.setMap(map);
-    poiMassMarks.on("click", (event) => {
-      if (event.data?.poi) showPoiDetails(event.data.poi);
+      groups.set(key, group);
     });
-    return;
-  }
 
-  const categoryColors = {
-    早餐服务: "#e45d31",
-    中式面点: "#d99d32",
-    咖啡烘焙: "#70806d",
-  };
-
-  poiMarkers = props.pois.map((poi) => {
-    const marker = new window.AMap.CircleMarker({
-      center: [poi.lng, poi.lat],
-      radius: 4,
-      strokeColor: "#fff9ef",
-      strokeWeight: 1.4,
-      fillColor: categoryColors[poi.category] ?? "#e45d31",
-      fillOpacity: 0.88,
-      zIndex: 12,
-      cursor: "pointer",
-    });
-    marker.on("click", () => showPoiDetails(poi));
-    marker.setMap(map);
-    return marker;
+  return [...groups.values()].map((group) => {
+    const dominantDistrict =
+      [...group.districts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ||
+      "";
+    const categoryColor =
+      group.count >= 28
+        ? "#d9653b"
+        : group.count >= 10
+          ? "#d59b43"
+          : "#78866f";
+    return {
+      name: `${dominantDistrict}早餐候选`,
+      value: [
+        group.longitudeTotal / group.count,
+        group.latitudeTotal / group.count,
+      ],
+      cluster: {
+        count: group.count,
+        district: dominantDistrict,
+        names: [...group.names].slice(0, 4),
+      },
+      symbolSize: Math.min(26, 6 + Math.sqrt(group.count) * 2.8),
+      itemStyle: {
+        color: categoryColor,
+        opacity: 0.78,
+      },
+    };
   });
+}
+
+function routeSeries() {
+  if (!props.route?.path?.length) return [];
+  const routePoints = props.route.path.map((point, index) => ({
+    name: index === 0 ? "起点" : "终点",
+    value: point,
+    itemStyle: {
+      color: index === 0 ? "#2f6954" : "#a33b27",
+    },
+    symbol: index === 0 ? "circle" : "pin",
+    symbolSize: index === 0 ? 12 : 20,
+    label: {
+      show: true,
+      position: index === 0 ? "bottom" : "top",
+      formatter: index === 0 ? "起点" : "终点",
+      color: "#1f3030",
+      fontSize: 10,
+    },
+  }));
+  const recommendations = (props.route.recommendations || []).map(
+    (poi, index) => ({
+      name: poi.name,
+      value: [poi.lng, poi.lat],
+      poi,
+      itemStyle: { color: "#e45d31" },
+      symbolSize: 18,
+      label: {
+        show: true,
+        formatter: String(index + 1).padStart(2, "0"),
+        color: "#fff9ef",
+        fontSize: 8,
+        fontWeight: 700,
+      },
+    })
+  );
+  return [
+    {
+      name: "通勤路线",
+      type: "lines",
+      coordinateSystem: "geo",
+      zlevel: 5,
+      data: [{ coords: props.route.path }],
+      lineStyle: {
+        color: "#e45d31",
+        width: 3.5,
+        opacity: 0.9,
+        type: props.route.estimated ? "dashed" : "solid",
+      },
+      silent: true,
+    },
+    {
+      name: "起点终点",
+      type: "scatter",
+      coordinateSystem: "geo",
+      zlevel: 6,
+      data: routePoints.length >= 2 ? [routePoints[0], routePoints.at(-1)] : [],
+    },
+    {
+      name: "推荐早餐",
+      type: "scatter",
+      coordinateSystem: "geo",
+      zlevel: 7,
+      data: recommendations,
+      symbol: "circle",
+      itemStyle: {
+        borderColor: "#fff9ef",
+        borderWidth: 2,
+      },
+    },
+  ];
+}
+
+function chartOption() {
+  return {
+    animationDurationUpdate: 350,
+    backgroundColor: "transparent",
+    aria: { enabled: true, description: "上海市早餐候选地点分布图。" },
+    tooltip: {
+      trigger: "item",
+      confine: true,
+      backgroundColor: "rgba(255, 249, 239, 0.97)",
+      borderColor: "rgba(80, 67, 48, 0.16)",
+      textStyle: { color: "#263433", fontSize: 12 },
+      extraCssText: "box-shadow:0 9px 26px rgba(48,37,23,.12);",
+      formatter(params) {
+        const poi = params.data?.poi;
+        if (poi) {
+          return `<strong>${escapeHtml(poi.name)}</strong><br/>${escapeHtml(
+            poi.category || "早餐候选"
+          )}<br/>${escapeHtml(poi.address || poi.district || "")}`;
+        }
+        const cluster = params.data?.cluster;
+        if (cluster) {
+          const names = cluster.names.length
+            ? `<br/>${cluster.names.map(escapeHtml).join("、")}`
+            : "";
+          return `<strong>${escapeHtml(cluster.district)}</strong><br/>早餐候选约 ${
+            cluster.count
+          } 个${names}`;
+        }
+        const district = props.districts.find(
+          (item) => item.name === params.name
+        );
+        if (!district) return escapeHtml(params.name || "");
+        return `<strong>${escapeHtml(district.name)}</strong><br/>早餐候选 ${
+          district.stalls
+        } · ${props.activeBand} 分覆盖 ${district.coverage[
+          props.activeBand
+        ].toFixed(1)}%`;
+      },
+    },
+    geo: {
+      map: "shanghai-osm",
+      roam: true,
+      zoom: zoomMode.value === "central" ? 2.15 : 1.05,
+      center: zoomMode.value === "central" ? [121.47, 31.235] : [121.47, 31.23],
+      layoutCenter: ["50%", "49%"],
+      layoutSize: zoomMode.value === "central" ? "110%" : "96%",
+      scaleLimit: { min: 0.8, max: 8 },
+      itemStyle: {
+        areaColor: "#ded6c7",
+        borderColor: "#fff9ef",
+        borderWidth: 1,
+        shadowBlur: 18,
+        shadowColor: "rgba(63, 51, 34, 0.08)",
+        shadowOffsetY: 6,
+      },
+      label: {
+        show: true,
+        color: "rgba(31, 48, 48, 0.68)",
+        fontFamily: "Microsoft YaHei",
+        fontSize: 9,
+        formatter: (params) => params.name.replace("区", ""),
+      },
+      emphasis: {
+        label: { color: "#1f3030", fontWeight: 600 },
+        itemStyle: { areaColor: "#f3c5a9" },
+      },
+      regions: districtRegions(),
+    },
+    series: [
+      {
+        name: "早餐候选",
+        type: "scatter",
+        coordinateSystem: "geo",
+        zlevel: 3,
+        symbolSize: 9,
+        data: clusterPoiData(),
+        itemStyle: {
+          borderColor: "rgba(255, 249, 239, 0.92)",
+          borderWidth: 1.2,
+          shadowBlur: 7,
+          shadowColor: "rgba(80, 54, 27, 0.14)",
+        },
+        emphasis: { scale: 1.8, label: { show: false } },
+      },
+      ...routeSeries(),
+    ],
+  };
+}
+
+function renderChart() {
+  if (!chart) return;
+  try {
+    chart.setOption(chartOption(), true);
+    mapError.value = "";
+  } catch (error) {
+    mapError.value =
+      error instanceof Error ? error.message : "地图渲染失败。";
+  }
+}
+
+function initializeMap() {
+  if (!mapElement.value) return;
+  chart = echarts.init(mapElement.value, null, { renderer: "canvas" });
+  chart.on("click", (params) => {
+    if (params.componentType === "geo" && params.name) {
+      emit("select", params.name);
+      return;
+    }
+    const poi = params.data?.poi;
+    if (poi?.district) emit("select", poi.district);
+    else if (params.data?.cluster?.district) {
+      emit("select", params.data.cluster.district);
+    }
+  });
+  resizeObserver = new ResizeObserver(() => chart?.resize());
+  resizeObserver.observe(mapElement.value);
+  renderChart();
 }
 
 function fitWholeCity() {
-  if (!map) return;
-  const overlays = [...districtPolygons.values()].flat();
-  if (overlays.length > 0) {
-    map.setFitView(overlays, false, [42, 42, 42, 42], 12);
-  } else {
-    map.setZoomAndCenter(10, [121.47, 31.27]);
-  }
+  zoomMode.value = "city";
+  renderChart();
 }
 
 function focusCentralCity() {
-  map?.setZoomAndCenter(12.2, [121.465, 31.23]);
-}
-
-function clearRouteOverlay() {
-  routePolyline?.setMap(null);
-  routePolyline = undefined;
-  routeMarkers.forEach((marker) => marker.setMap(null));
-  routeMarkers = [];
-}
-
-function drawRouteOverlay() {
-  if (!map || !window.AMap || !props.route) {
-    clearRouteOverlay();
-    return;
-  }
-
-  clearRouteOverlay();
-  const AMap = window.AMap;
-  routePolyline = new AMap.Polyline({
-    path: props.route.path,
-    strokeColor: "#e45d31",
-    strokeWeight: 6,
-    strokeOpacity: 0.95,
-    isOutline: true,
-    outlineColor: "#fff9ef",
-    borderWeight: 2,
-    zIndex: 20,
-  });
-  routePolyline.setMap(map);
-
-  const startMarker = new AMap.CircleMarker({
-    center: props.route.origin.location,
-    radius: 9,
-    strokeColor: "#fff9ef",
-    strokeWeight: 3,
-    fillColor: "#526b59",
-    fillOpacity: 1,
-    zIndex: 24,
-  });
-  const endMarker = new AMap.CircleMarker({
-    center: props.route.destination.location,
-    radius: 9,
-    strokeColor: "#fff9ef",
-    strokeWeight: 3,
-    fillColor: "#e45d31",
-    fillOpacity: 1,
-    zIndex: 24,
-  });
-  startMarker.setMap(map);
-  endMarker.setMap(map);
-  routeMarkers.push(startMarker, endMarker);
-
-  const originLabel = new AMap.Text({
-    text: "起点",
-    position: props.route.origin.location,
-    anchor: "bottom-center",
-    offset: new AMap.Pixel(0, -8),
-    zIndex: 25,
-    style: {
-      border: "none",
-      background: "rgba(255,249,239,.92)",
-      color: "#526b59",
-      padding: "2px 5px",
-      fontSize: "11px",
-    },
-  });
-  const destinationLabel = new AMap.Text({
-    text: "终点",
-    position: props.route.destination.location,
-    anchor: "bottom-center",
-    offset: new AMap.Pixel(0, -8),
-    zIndex: 25,
-    style: {
-      border: "none",
-      background: "rgba(255,249,239,.92)",
-      color: "#a33b27",
-      padding: "2px 5px",
-      fontSize: "11px",
-    },
-  });
-  originLabel.setMap(map);
-  destinationLabel.setMap(map);
-  routeMarkers.push(originLabel, destinationLabel);
-
-  props.route.recommendations.forEach((poi, index) => {
-    const recommendationMarker = new AMap.CircleMarker({
-      center: [poi.lng, poi.lat],
-      radius: 10,
-      strokeColor: "#fff9ef",
-      strokeWeight: 3,
-      fillColor: "#f0a43a",
-      fillOpacity: 1,
-      zIndex: 26,
-      cursor: "pointer",
-    });
-    recommendationMarker.on("click", () => {
-      infoWindow?.setContent(`
-        <div style="min-width:210px;padding:2px;color:#1f3030;font-family:'Microsoft YaHei UI','PingFang SC',sans-serif">
-          <strong style="font-size:14px">${escapeHtml(poi.name)}</strong>
-          <div style="margin-top:6px;color:#7d766a;font-size:11px;line-height:1.6">
-            <div>距通勤路线约 ${poi.routeDistance} 米</div>
-            <div>早餐绕行约 ${poi.detourMinutes} 分钟</div>
-            <div>${escapeHtml(poi.address || poi.district)}</div>
-          </div>
-        </div>
-      `);
-      infoWindow?.open(map, [poi.lng, poi.lat]);
-    });
-    recommendationMarker.setMap(map);
-    routeMarkers.push(recommendationMarker);
-
-    const numberLabel = new AMap.Text({
-      text: String(index + 1),
-      position: [poi.lng, poi.lat],
-      anchor: "center",
-      zIndex: 27,
-      style: {
-        border: "none",
-        background: "transparent",
-        color: "#1f3030",
-        fontSize: "9px",
-        fontWeight: "700",
-        padding: "0",
-        pointerEvents: "none",
-      },
-    });
-    numberLabel.setMap(map);
-    routeMarkers.push(numberLabel);
-  });
-
-  const routePath = props.route.path;
-  const longitudes = routePath.map((point) => point[0]);
-  const latitudes = routePath.map((point) => point[1]);
-  const bounds = new AMap.Bounds(
-    [Math.min(...longitudes), Math.min(...latitudes)],
-    [Math.max(...longitudes), Math.max(...latitudes)]
-  );
-  map.setBounds(bounds, false, [110, 110, 110, 110], 16);
-}
-
-async function initializeMap() {
-  try {
-    const AMap = await loadAmap();
-    map = new AMap.Map(mapElement.value, {
-      viewMode: "2D",
-      zoom: 10,
-      center: [121.47, 31.27],
-      mapStyle: "amap://styles/whitesmoke",
-      showLabel: true,
-    });
-    map.addControl(new AMap.Scale());
-    map.addControl(new AMap.ToolBar({ position: { top: "58px", right: "12px" } }));
-    createDistrictPolygons(AMap);
-    createPoiOverlay(AMap);
-    fitWholeCity();
-    drawRouteOverlay();
-    resizeObserver = new ResizeObserver(() => map?.resize());
-    resizeObserver.observe(mapElement.value);
-  } catch (error) {
-    mapError.value =
-      error instanceof Error ? error.message : "高德地图初始化失败。";
-  }
+  zoomMode.value = "central";
+  renderChart();
 }
 
 watch(
-  () => [props.activeBand, props.selectedName],
-  () => {
-    updateDistrictStyles();
-  }
-);
-
-watch(
-  () => props.districts,
-  () => {
-    if (districtPolygons.size > 0) updateDistrictStyles();
-  },
+  () => [props.activeBand, props.selectedName, props.pois, props.districts],
+  () => nextTick(renderChart),
   { deep: true }
 );
-
-watch(
-  () => props.pois,
-  () => {
-    updatePoiOverlay();
-  },
-  { deep: true }
-);
-
 watch(
   () => props.route,
-  () => {
-    drawRouteOverlay();
-  },
+  () => nextTick(renderChart),
   { deep: true }
 );
 
@@ -511,15 +386,7 @@ onMounted(initializeMap);
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
-  infoWindow?.close();
-  districtLabels.forEach((label) => label.setMap(null));
-  poiMarkers.forEach((marker) => marker.setMap(null));
-  poiMassMarks?.setMap(null);
-  clearRouteOverlay();
-  districtPolygons.forEach((polygons) =>
-    polygons.forEach((polygon) => polygon.setMap(null))
-  );
-  map?.destroy();
+  chart?.dispose();
 });
 </script>
 
@@ -529,8 +396,10 @@ onBeforeUnmount(() => {
       <div class="map-heading">
         <h2 id="map-title">城市早餐可达圈</h2>
         <p>
-          {{ dataModeLabel }} · 高德真实底图与早餐 POI · {{ totalCount.toLocaleString("zh-CN") }} 个检索结果 ·
-          地图展示 {{ pois.length }} 个采样点、覆盖 {{ districts.length }} 区 · {{ updatedAt }}
+          {{ dataModeLabel }} · OpenStreetMap 早餐候选 ·
+          {{ totalCount.toLocaleString("zh-CN") }} 个结果 · 地图展示
+          {{ pois.length }} 个点、覆盖 {{ districts.length }} 区 ·
+          {{ updatedAt }}
         </p>
       </div>
       <div class="band-switch" aria-label="步行可达时间切换">
@@ -550,14 +419,18 @@ onBeforeUnmount(() => {
     <div class="map-stage">
       <div
         ref="mapElement"
-        class="amap-canvas"
+        class="map-canvas"
         role="img"
-        aria-label="高德地图上的上海早餐 POI 与行政区可达性分布"
+        aria-label="基于本地上海区界和 OpenStreetMap 早餐候选地点的地图"
       />
       <div class="map-topline">
-        <span>上海市域 · 高德实时 POI</span>
+        <span>上海市域 · 本地区界 · OpenStreetMap</span>
         <div class="map-view-actions">
-          <button class="planner-trigger" type="button" @click="emit('open-planner')">
+          <button
+            class="planner-trigger"
+            type="button"
+            @click="emit('open-planner')"
+          >
             通勤早餐
           </button>
           <button type="button" @click="fitWholeCity">全市</button>
@@ -565,12 +438,15 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-if="route" class="route-status">
-        <span>{{ route.modeLabel }} · {{ route.durationMinutes ?? "—" }} 分钟 · {{ route.distanceKm }} 公里</span>
+        <span>
+          {{ route.modeLabel }} · {{ route.durationMinutes ?? "—" }} 分钟 ·
+          {{ route.distanceKm }} 公里
+        </span>
         <button type="button" @click="emit('clear-route')">清除路线</button>
       </div>
       <div v-if="loading" class="map-loading">
         <span aria-hidden="true" />
-        正在加载高德早餐 POI
+        正在加载 OpenStreetMap 数据
       </div>
       <div v-if="mapError" class="map-error" role="alert">
         {{ mapError }}
@@ -584,15 +460,10 @@ onBeforeUnmount(() => {
         <i aria-hidden="true" />
         <span>高</span>
       </div>
-      <div class="poi-legend" aria-label="早餐 POI 类型">
-        <template v-if="pois.length > 1200">
-          <span><i class="dot all" />全部早餐 POI</span>
-        </template>
-        <template v-else>
-          <span><i class="dot breakfast" />早餐</span>
-          <span><i class="dot dimsum" />面点</span>
-          <span><i class="dot coffee" />咖啡</span>
-        </template>
+      <div class="poi-legend" aria-label="早餐候选密度">
+        <span><i class="dot breakfast" />低密度</span>
+        <span><i class="dot dimsum" />中密度</span>
+        <span><i class="dot coffee" />高密度</span>
       </div>
     </div>
 
@@ -606,7 +477,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="selected-metric">
         <strong>{{ selectedDistrict?.stalls?.toLocaleString("zh-CN") ?? 0 }}</strong>
-        <span>早餐 POI</span>
+        <span>早餐候选</span>
       </div>
       <div class="selected-metric">
         <strong>{{ selectedCoverage.toFixed(1) }}%</strong>
@@ -677,7 +548,6 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-size: clamp(10px, 0.7vw, 13px);
   cursor: pointer;
-  transition: color 180ms ease, background 180ms ease;
 }
 
 .band-switch button.is-active {
@@ -692,10 +562,12 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   overflow: hidden;
   border-radius: 12px;
-  background: #f4efe4;
+  background:
+    radial-gradient(circle at 70% 20%, rgba(255, 255, 255, 0.62), transparent 34%),
+    #f1eadc;
 }
 
-.amap-canvas {
+.map-canvas {
   width: 100%;
   height: 100%;
   min-height: 390px;
@@ -794,10 +666,10 @@ onBeforeUnmount(() => {
   border: 2px solid rgba(228, 93, 49, 0.18);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: amap-loading 800ms linear infinite;
+  animation: map-loading 800ms linear infinite;
 }
 
-@keyframes amap-loading {
+@keyframes map-loading {
   to {
     transform: rotate(360deg);
   }
@@ -855,19 +727,15 @@ onBeforeUnmount(() => {
 }
 
 .dot.breakfast {
-  background: #e45d31;
+  background: #78866f;
 }
 
 .dot.dimsum {
-  background: #d99d32;
+  background: #d59b43;
 }
 
 .dot.coffee {
-  background: #70806d;
-}
-
-.dot.all {
-  background: #2c8db8;
+  background: #d9653b;
 }
 
 .selected-strip {
@@ -932,7 +800,7 @@ onBeforeUnmount(() => {
   }
 
   .map-stage,
-  .amap-canvas {
+  .map-canvas {
     min-height: 360px;
   }
 }
@@ -948,7 +816,7 @@ onBeforeUnmount(() => {
   }
 
   .map-stage,
-  .amap-canvas {
+  .map-canvas {
     min-height: 430px;
   }
 
